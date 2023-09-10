@@ -2,7 +2,8 @@ package services
 
 import (
 	"context"
-	"grpc_go/pb/pagination"
+	"grpc_go/cmd/helpers"
+	pagingPb "grpc_go/pb/pagination"
 	productPb "grpc_go/pb/product"
 	"log"
 
@@ -16,19 +17,28 @@ type ProductService struct {
 	*gorm.DB
 }
 
-func (p *ProductService) GetProducts(context.Context, *productPb.Empty) (*productPb.Products, error) {
+func (p *ProductService) GetProducts(ctx context.Context, pageParam *productPb.Page) (*productPb.Products, error) {
+	var page int64 = 1
+	if pageParam.GetPage() != 0 {
+		page = pageParam.GetPage()
+	}
+
+	var pagination pagingPb.Pagination
 	var products []*productPb.Product
 
-	rows, err := p.DB.Table("products AS p").
+	sql := p.DB.Table("products AS p").
 		Joins("LEFT JOIN categories AS c ON c.id = p.category_id").
-		Select("p.id", "p.name", "p.price", "p.stock", "c.id as category_id", "c.name as category_name").
-		Rows()
+		Select("p.id", "p.name", "p.price", "p.stock", "c.id as category_id", "c.name as category_name")
+
+	offset, limit := helpers.Pagination(sql, page, &pagination)
+
+	rows, err := sql.Offset(int(offset)).Limit(int(limit)).Rows()
 
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	defer rows.Close()
 
+	defer rows.Close()
 	for rows.Next() {
 		var product productPb.Product
 		var category productPb.Category
@@ -42,14 +52,73 @@ func (p *ProductService) GetProducts(context.Context, *productPb.Empty) (*produc
 	}
 
 	response := &productPb.Products{
-		Pagination: &pagination.Pagination{
-			Total:       2,
-			PerPage:     1,
-			CurrentPage: 1,
-			LastPage:    1,
-		},
-		Data: products,
+		Pagination: &pagination,
+		Data:       products,
 	}
 
 	return response, nil
+}
+
+func (p *ProductService) GetProduct(ctx context.Context, id *productPb.Id) (*productPb.Product, error) {
+	row := p.DB.Table("products AS p").
+		Joins("LEFT JOIN categories AS c ON c.id = p.category_id").
+		Select("p.id", "p.name", "p.price", "p.stock", "c.id as category_id", "c.name as category_name").
+		Where("p.id = ?", id.GetId()).
+		Row()
+
+	var product productPb.Product
+	var category productPb.Category
+
+	if err := row.Scan(&product.Id, &product.Name, &product.Price,
+		&product.Stock, &category.Id, &category.Name); err != nil {
+		log.Fatalf("Row data failed %v", err.Error())
+	}
+	product.Category = &category
+
+	return &product, nil
+}
+
+func (p *ProductService) CreateProduct(ctx context.Context, productData *productPb.Product) (*productPb.Id, error) {
+	var Response productPb.Id
+
+	err := p.DB.Transaction(func(tx *gorm.DB) error {
+		category := productPb.Category{
+			Id:   0,
+			Name: productData.GetCategory().GetName(),
+		}
+
+		if err := tx.Table("categories").
+			Where("LCASE(name) = ?", category.GetName()).
+			FirstOrCreate(&category).Error; err != nil {
+			return err
+		}
+
+		product := struct {
+			Id          uint64
+			Name        string
+			Price       float64
+			Stock       uint32
+			Category_id uint32
+		}{
+			Id:          productData.GetId(),
+			Name:        productData.GetName(),
+			Price:       productData.GetPrice(),
+			Stock:       productData.GetStock(),
+			Category_id: uint32(category.GetId()),
+		}
+
+		if err := tx.Table("products").
+			Create(&product).Error; err != nil {
+			return err
+		}
+
+		Response.Id = product.Id
+		return nil
+	})
+
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	return &Response, nil
 }
