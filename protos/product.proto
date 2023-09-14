@@ -6,6 +6,7 @@ import "pagination.proto";
 option go_package = "grpc-go/pb/product";
 
 service ProductService {
+    //Unary gRPC
     rpc GetProducts(Page) returns(Products);
     rpc GetProduct(Id) returns(Product);
     rpc CreateProduct(Product) returns(Id);
