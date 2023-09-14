@@ -71,7 +71,7 @@ func (p *ProductService) GetProduct(ctx context.Context, id *productPb.Id) (*pro
 
 	if err := row.Scan(&product.Id, &product.Name, &product.Price,
 		&product.Stock, &category.Id, &category.Name); err != nil {
-		log.Fatalf("Row data failed %v", err.Error())
+		return nil, status.Error(codes.NotFound, err.Error())
 	}
 	product.Category = &category
 
@@ -120,5 +120,64 @@ func (p *ProductService) CreateProduct(ctx context.Context, productData *product
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
+	return &Response, nil
+}
+
+func (p *ProductService) UpdateProduct(ctx context.Context, productData *productPb.Product) (*productPb.Status, error) {
+	var Response productPb.Status
+
+	err := p.DB.Transaction(func(tx *gorm.DB) error {
+		category := productPb.Category{
+			Id:   0,
+			Name: productData.GetCategory().GetName(),
+		}
+
+		if err := tx.Table("categories").
+			Where("LCASE(name) = ?", category.GetName()).
+			FirstOrCreate(&category).Error; err != nil {
+			return err
+		}
+
+		product := struct {
+			Id          uint64
+			Name        string
+			Price       float64
+			Stock       uint32
+			Category_id uint32
+		}{
+			Id:          productData.GetId(),
+			Name:        productData.GetName(),
+			Price:       productData.GetPrice(),
+			Stock:       productData.GetStock(),
+			Category_id: uint32(category.GetId()),
+		}
+
+		if err := tx.Table("products").
+			Where("id = ?", product.Id).
+			Updates(&product).Error; err != nil {
+			return err
+		}
+
+		Response.Status = 1
+		return nil
+	})
+
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	return &Response, nil
+}
+
+func (p *ProductService) DeleteProduct(ctx context.Context, id *productPb.Id) (*productPb.Status, error) {
+	var Response productPb.Status
+
+	if err := p.DB.Table("products").
+		Where("id = ?", id.GetId()).
+		Delete(nil).Error; err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	Response.Status = 1
 	return &Response, nil
 }
